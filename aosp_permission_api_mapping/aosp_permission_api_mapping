@@ -1,0 +1,139 @@
+#!/usr/bin/env python
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+import os
+import shutil
+import re
+import sys
+import math
+
+java_files = []
+
+def getDigitCount(n):
+    if n > 0:
+        return int(math.log10(n))+1
+    elif n == 0:
+        return 1
+
+def listJavaFiles(aosp_root_dir):
+    for(dpath,dnames,fnames) in os.walk(aosp_root_dir):
+        for _ in fnames:
+            if ".java" in _:
+                findJavaFiles(dpath+"/"+_)
+
+def findJavaFiles(f):
+    if "RequiresPermission.java" in f:
+        return
+    fin = open(f,'r')
+    for _ in fin.readlines():
+        if "@RequiresPermission" in _:
+            java_files.append(f)
+            fin.close()
+            return
+
+def extractMapping(f):
+    comment = False
+    lines = []
+    # remove comments in java files
+    fin = open(f,'r')
+    for _ in fin.readlines():
+        line = _.replace("\s\s+","")
+        if "/*" in line:
+            comment = True
+        if "*/" in line:
+            comment = False
+            continue
+        if comment == False:
+            if "//" in line:
+                lineSplit = line.split("//")
+                if "\"" in lineSplit[0] and "\"" in lineSplit[1]:
+                    lines.append(line)
+                else:
+                    lines.append(lineSplit[0])
+            else:
+                lines.append(line)
+    fin.close()
+    packageName = None
+    className = None
+    methodName = None
+    findMethod = False
+    scanPerm = False
+    permList = None
+    mapping = []
+    # create directory if it not exists
+    if not os.path.exists(os.path.dirname(f.replace(aosp_root_dir,output_dir))):
+        os.makedirs(os.path.dirname(f.replace(aosp_root_dir,output_dir)))
+    fout = open(f.replace(aosp_root_dir,output_dir).replace(".java",".permmap"),'w')
+    # generate mapping
+    for _ in lines:
+        if "package" in _.strip() and packageName is None:
+            packageName = _.replace("package ","").replace(";","").replace(".","/").replace("\n","").strip()
+        if " class " in _:
+            tmpList = _.split(" ")
+            pos = tmpList.index("class")
+            className = tmpList[pos+1].replace("\n","")
+        if " interface " in _:
+            tmpList = _.split(" ")
+            pos = tmpList.index("interface")
+            className = tmpList[pos+1].replace("\n","")
+        if "@RequiresPermission(" in _ and findMethod == False:
+            permList = _.replace("@RequiresPermission(","").replace(")","").strip()
+            if ")" not in _:
+                scanPerm = True
+                continue
+        if scanPerm == True:
+            permList += _.replace("@RequiresPermission(","").replace(")","").strip()
+            if ")" in _:
+                permList = permList.replace("\n","")
+                scanPerm = False
+                findMethod = True
+        if findMethod == True:
+            if(_.strip().endswith(";")):
+                findMethod = False
+            if re.search(r'^[^@].+\(',_.strip()) and "=" not in _.strip():
+                objName = str(re.findall(r"\w+\(",_.strip())[0].replace("(","")+",")
+                if "anyOf" in permList or "allOf" in permList:
+                    permList = permList.replace("anyOf","").replace("allOf","")
+                    permList = permList.replace("=","").replace("{","").replace("}","")
+                    permList = permList.replace(" ","")
+                    for perm in permList.split(","):
+                        fout.write(str(packageName+"/"+className+";->"+objName+perm)+"\n")
+                else:    
+                    fout.write(str(packageName+"/"+className+";->"+objName+permList)+"\n")
+                findMethod = False
+    fout.close()
+
+if __name__ == "__main__":
+    if len(sys.argv) != 3:
+        filename = None
+        if ("/") in sys.argv[0]:
+            filename = sys.argv[0].split("/")[-1]
+        else:
+            filename = sys.argv[0]
+        print("Usage Error: "+filename+" <AOSP root dir> <output dir>")
+        sys.exit(1)
+
+    aosp_root_dir = sys.argv[1]
+    output_dir = sys.argv[2]
+
+    if not os.path.exists(aosp_root_dir):
+        print(aosp_root_dir+" does not exist!")
+        sys.exit(2)
+    
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+
+    listJavaFiles(aosp_root_dir)
+
+    if (java_files == 0):
+        print("Java Files not found in "+aosp_root_dir)
+        sys.exit(3)
+
+    for _ in java_files:
+        print("\rProgress: ",end="")
+        print(str(1+java_files.index(_)).zfill(getDigitCount(len(java_files))),end="")
+        print(" of ",end="")
+        print(str(len(java_files)).zfill(getDigitCount(len(java_files))),end="")
+        extractMapping(_)
+    print("")
